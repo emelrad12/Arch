@@ -115,6 +115,12 @@ public static partial class EntityExtensions
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Set<T>(this in Entity entity, in T? component = default)
     {
+#if DEBUG
+        if(!entity.Has<T>())
+        {
+            throw new ArgumentException($"Entity {entity} doesnt have component {typeof(T)}");
+        }
+#endif
         var world = World.Worlds[entity.WorldId];
         world.Set(entity, in component);
     }
@@ -143,6 +149,13 @@ public static partial class EntityExtensions
     [Pure]
     public static ref T Get<T>(this in Entity entity)
     {
+#if DEBUG
+        if(!entity.Has<T>())
+        {
+            throw new ArgumentException($"Entity {entity} doesnt have component {typeof(T)}");
+        }
+#endif
+
         var world = World.Worlds[entity.WorldId];
         return ref world.Get<T>(entity);
     }
@@ -201,6 +214,12 @@ public static partial class EntityExtensions
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Add<T>(this in Entity entity, in T? component = default)
     {
+        #if DEBUG
+        if(entity.Has<T>())
+        {
+            throw new ArgumentException($"Entity {entity} already has component {typeof(T)}");
+        }
+        #endif
         var world = World.Worlds[entity.WorldId];
         world.Add(entity, component);
     }
