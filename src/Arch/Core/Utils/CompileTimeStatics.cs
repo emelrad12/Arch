@@ -151,7 +151,7 @@ public static class ComponentRegistry
         Size++;
         return componentType;
     }
-
+    public static Object lockObject = new Object();
     /// <summary>
     ///     Adds a new component and registers it.
     /// </summary>
@@ -160,7 +160,10 @@ public static class ComponentRegistry
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static ComponentType Add<T>()
     {
-        return Add(typeof(T), SizeOf<T>());
+        lock (lockObject)
+        {
+            return Add(typeof(T), SizeOf<T>());
+        }
     }
 
     /// <summary>
