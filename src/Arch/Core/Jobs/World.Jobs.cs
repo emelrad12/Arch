@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using Arch.Core.Utils;
 using Collections.Pooled;
 using Schedulers;
@@ -9,7 +10,6 @@ namespace Arch.Core;
 
 public partial class World
 {
-
     /// <summary>
     ///     A list of <see cref="JobHandle"/> which are pooled to avoid allocs.
     /// </summary>
@@ -32,10 +32,7 @@ public partial class World
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void ParallelQuery(in QueryDescription queryDescription, ForEach forEntity)
     {
-        var foreachJob = new ForEachJob
-        {
-            ForEach = forEntity
-        };
+        var foreachJob = new ForEachJob { ForEach = forEntity };
 
         InlineParallelChunkQuery(in queryDescription, foreachJob);
     }
@@ -104,6 +101,13 @@ public partial class World
         {
             var archetypeSize = archetype.ChunkCount;
             var part = new RangePartitioner(Environment.ProcessorCount, archetypeSize);
+            var copyJob = innerJob;
+            // Console.WriteLine($"Total jobs${archetype.Chunks.Count(chunk => chunk.Size > 0)}");
+            Parallel.ForEach(archetype.Chunks.Where(chunk => chunk.Size > 0), new(), chunk =>
+            {
+                copyJob.Execute(ref chunk);
+            });
+            continue;
             foreach (var range in part)
             {
                 var job = pool.Get();
@@ -160,13 +164,7 @@ public partial class World
             var part = new RangePartitioner(Environment.ProcessorCount, archetypeSize);
             foreach (var range in part)
             {
-                var job = new ChunkIterationJob<T>
-                {
-                    Start = range.Start,
-                    Size = range.Length,
-                    Chunks = archetype.Chunks,
-                    Instance = innerJob
-                };
+                var job = new ChunkIterationJob<T> { Start = range.Start, Size = range.Length, Chunks = archetype.Chunks, Instance = innerJob };
 
                 var jobHandle = SharedJobScheduler.Schedule(job);
                 JobHandles.Add(jobHandle);

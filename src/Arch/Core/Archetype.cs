@@ -123,7 +123,7 @@ public sealed partial class Archetype
     /// <summary>
     ///     The minimum size of a regular L1 cache.
     /// </summary>
-    internal const int BaseSize = 16000; // 16KB Chunk size
+    internal const int BaseSize = 512 * 4; // 16KB Chunk size
 
     /// <summary>
     ///     A lookup array that maps the component id to an index within the component array of a <see cref="Chunk"/> to quickly find the correct array for the component type.
