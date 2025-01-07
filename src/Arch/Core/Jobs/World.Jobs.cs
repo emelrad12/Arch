@@ -102,11 +102,20 @@ public partial class World
             var archetypeSize = archetype.ChunkCount;
             var part = new RangePartitioner(Environment.ProcessorCount, archetypeSize);
             var copyJob = innerJob;
-            // Console.WriteLine($"Total jobs${archetype.Chunks.Count(chunk => chunk.Size > 0)}");
-            Parallel.ForEach(archetype.Chunks.Where(chunk => chunk.Size > 0), new(), chunk =>
+            if (false)
+                Parallel.ForEach(archetype.Chunks.Where(chunk => chunk.Size > 0), new() { MaxDegreeOfParallelism = Environment.ProcessorCount }, chunk =>
+                {
+                    copyJob.Execute(ref chunk);
+                });
+            else
             {
-                copyJob.Execute(ref chunk);
-            });
+                foreach (var chunk in archetype.Chunks.Where(chunk => chunk.Size > 0))
+                {
+                    var chunk2 = chunk;
+                    copyJob.Execute(ref chunk2);
+                }
+            }
+
             continue;
             foreach (var range in part)
             {
