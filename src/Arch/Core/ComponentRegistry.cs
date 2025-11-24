@@ -132,6 +132,10 @@ public static class ComponentRegistry
         _types = _types.Add(id, type);
 
         Size++;
+        if (World.Worlds.Any(w => w != null!))
+        {
+            FastEntityAccessorCache.RefreshForWorld(World.Worlds.Last(x=>x!=null!));
+        }
         return meta;
     }
 

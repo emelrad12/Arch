@@ -99,8 +99,7 @@ public partial class World
         var query = Query(in queryDescription);
         foreach (var archetype in query.GetArchetypeIterator())
         {
-            var archetypeSize = archetype.ChunkCount;
-            var part = new RangePartitioner(Environment.ProcessorCount, archetypeSize);
+            var part = new RangePartitioner(Environment.ProcessorCount, 1);
             var parentHandle = SharedJobScheduler.Schedule();
             foreach (var range in part)
             {
@@ -197,8 +196,7 @@ public partial class World
         var handle = SharedJobScheduler.Schedule();
         foreach (var archetype in query.GetArchetypeIterator())
         {
-            var archetypeSize = archetype.ChunkCount;
-            var part = new RangePartitioner(Environment.ProcessorCount, archetypeSize);
+            var part = new RangePartitioner(Environment.ProcessorCount, 1);
             foreach (var range in part)
             {
                 var job = new ChunkIterationJob<T>

@@ -3,7 +3,6 @@
   <PropertyGroup>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <LangVersion>latest</LangVersion>
-    <TargetFrameworks>net8.0; net6.0; netstandard2.1</TargetFrameworks>
 
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
@@ -29,7 +28,7 @@
     <RepositoryType>git</RepositoryType>
     <IsPackable>true</IsPackable>
 
-    <LangVersion>12</LangVersion>
+    <LangVersion>14</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Copyright>Apache2.0</Copyright>
 
@@ -38,6 +37,8 @@
     <Configurations>Debug;Debug-PureECS;Debug-Events;Release;Release-PureECS;Release-Events;</Configurations>
 
     <UnityPublish>true</UnityPublish>
+
+    <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">

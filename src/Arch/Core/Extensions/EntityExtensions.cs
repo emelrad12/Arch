@@ -71,6 +71,7 @@ public static partial class EntityExtensions
     [Pure]
     public static bool IsAlive(this in Entity entity)
     {
+        if (entity.Id == -1) return false;
         var world = World.Worlds.DangerousGetReferenceAt(entity.WorldId);
         return world.IsAlive(entity);
     }
@@ -82,10 +83,10 @@ public static partial class EntityExtensions
     /// <param name="exists">If the entity and its <see cref="EntityData"/> exists.</param>
     /// <returns>True if it exists and is alive, otherwise false.</returns>
     [Pure]
-    public static ref EntityData IsAlive(this in Entity entity, out bool exists)
+    public static EntityData IsAlive(this in Entity entity, out bool exists)
     {
         var world = World.Worlds.DangerousGetReferenceAt(entity.WorldId);
-        return ref world.IsAlive(entity, out exists);
+        return world.IsAlive(entity, out exists);
     }
 
     /// <summary>
@@ -134,9 +135,50 @@ public static partial class EntityExtensions
             throw new InvalidOperationException($"Entity {entity} does not have a component of type {typeof(T).Name}.");
         }
         #endif
-
+        // return ref entity.FastGet<T>();
         var world = World.Worlds.DangerousGetReferenceAt(entity.WorldId);
         return ref world.Get<T>(entity);
+    }
+
+    [Pure]
+    public static ref T Get<T>(this in FastEntity entity)
+    {
+        return ref entity.FastGet<T>();
+    }
+
+    public static ref T FastGet<T>(this in Entity entity)
+    {
+        var index = entity.SlotIndex;
+        var archetypeId = entity.ArchetypeId;
+        var componentId = Component<T>.ComponentType.Id;
+        return ref FastEntityAccessorCache.GetCacheItem(archetypeId, componentId).Get<T>(index);
+    }
+
+    public static ref T FastGet<T>(this in FastEntity entity)
+    {
+        var index = entity.SlotIndex;
+        var archetypeId = entity.ArchetypeId;
+        var componentId = Component<T>.ComponentType.Id;
+        return ref FastEntityAccessorCache.GetCacheItem(archetypeId, componentId).Get<T>(index);
+    }
+
+    public record struct CachedFastGet(int ArchetypeId, int ComponentId);
+    public static FastEntityAccessorT<T> GetFastEntityAccessor<T>(this in Entity entity)
+    {
+        var archetypeId = entity.ArchetypeId;
+        var componentId = Component<T>.ComponentType.Id;
+        return new(FastEntityAccessorCache.GetCacheItem(archetypeId, componentId));
+    }
+    public static CachedFastGet GetCached<T>(this in Entity entity)
+    {
+        var archetypeId = entity.ArchetypeId;
+        var componentId = Component<T>.ComponentType.Id;
+        return new(archetypeId, componentId);
+    }
+
+    public static ref T FasterGet<T>(this in Entity entity, CachedFastGet cachedFastGet)
+    {
+        return ref FastEntityAccessorCache.GetCacheItem(cachedFastGet.ArchetypeId, cachedFastGet.ComponentId).Get<T>(entity.SlotIndex);
     }
 
     /// <summary>

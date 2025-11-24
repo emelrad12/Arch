@@ -23,31 +23,6 @@ public static class DangerousArchetypeExtensions
     }
 
     /// <summary>
-    ///     Sets the <see cref="Archetype.ChunkCount"/>.
-    /// </summary>
-    /// <param name="archetype">The <see cref="Archetype"/>.</param>
-    /// <param name="count">The count.</param>
-    public static void SetCount(this Archetype archetype, int count)
-    {
-        archetype.Chunks.EnsureCapacity(count);
-        archetype.Count = count;
-    }
-
-    /// <summary>
-    ///     Sets the <see cref="Archetype.Chunks"/> and its capacity.
-    /// </summary>
-    /// <param name="archetype">The <see cref="Archetype"/> instance.</param>
-    /// <param name="chunks">The list of <see cref="Chunk"/>s.</param>
-    public static void SetChunks(this Archetype archetype, List<Chunk> chunks)
-    {
-        archetype.Chunks.EnsureCapacity(chunks.Count);
-        foreach (var chunk in chunks)
-        {
-            archetype.Chunks.Add(chunk);
-        }
-    }
-
-    /// <summary>
     ///     Sets the <see cref="Archetype.EntityCount"/>.
     /// </summary>
     /// <param name="archetype">The <see cref="Archetype"/>.</param>

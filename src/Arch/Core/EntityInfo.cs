@@ -1,14 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.CompilerServices;
-using System.Text;
-using System.Threading.Tasks;
-using Arch.Core;
-using Arch.Core.Extensions;
-using Arch.Core.Extensions.Internal;
-using Arch.LowLevel.Jagged;
-
 namespace Arch.Core;
 
 /// <summary>
@@ -21,17 +10,47 @@ public struct EntityData : IEquatable<EntityData>
     /// <summary>
     ///     A reference to its <see cref="Archetype"/>.
     /// </summary>
-    public Archetype Archetype;
+    public Archetype Archetype
+    {
+        get => Archetype.GetById(archetypeId);
+        set
+        {
+            if (value == null!)
+            {
+                archetypeId = -1;
+            }
+            else
+            {
+                archetypeId = value.id;
+            }
+        }
+    }
+
+    public ref int archetypeId => ref EcsBackingData.ArchetypeId[EntityId];
 
     /// <summary>
     ///     Its <see cref="Slot"/>.
     /// </summary>
-    public Slot Slot;
+    public ref Slot Slot => ref Unsafe.As<int, Slot>(ref EcsBackingData.SlotIndex[EntityId]);
 
     /// <summary>
     ///     Its version.
     /// </summary>
-    public readonly int Version;
+    public ref int Version => ref EcsBackingData.Version[EntityId];
+
+    private int internalId;
+    public int EntityId
+    {
+        get => internalId;
+        set
+        {
+            internalId = value;
+            if (value != -1)
+            {
+                EcsBackingData.EntityData[value].internalId = value;
+            }
+        }
+    }
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="EntityData"/> struct.
@@ -39,11 +58,15 @@ public struct EntityData : IEquatable<EntityData>
     /// <param name="archetype">Its <see cref="Archetype"/>.</param>
     /// <param name="slot">Its <see cref="Slot"/>.</param>
     /// <param name="version">Its version.</param>
-    public EntityData(Archetype archetype, Slot slot, int version)
+    public EntityData(Archetype archetype, Slot slot, int version, int entityId)
     {
-        Archetype = archetype;
-        Slot = slot;
-        Version = version;
+        EntityId = entityId;
+        if(entityId != -1)
+        {
+            Archetype = archetype;
+            Slot = slot;
+            Version = version;
+        }
     }
 
     /// <summary>
@@ -100,7 +123,7 @@ public struct EntityData : IEquatable<EntityData>
     /// <returns>True or false.</returns>
     public bool Equals(EntityData other)
     {
-        return Version == other.Version && Archetype != null && Archetype.Equals(other.Archetype) && Slot.Equals(other.Slot);
+        return EntityId == other.EntityId && Version == other.Version && archetypeId != -1 && archetypeId.Equals(other.archetypeId) && Slot.Equals(other.Slot);
     }
 
     /// <summary>
@@ -139,7 +162,7 @@ internal class EntityInfoStorage
     ///     The <see cref="Entity"/> <see cref="Archetype"/> and <see cref="Slot"/>s in an jagged array.
     /// <remarks>Because usually both are needed and thus an array access can be saved.</remarks>
     /// </summary>
-    internal JaggedArray<EntityData> EntityData {  get; set; }
+    internal EntityDataArrayProxy EntityData {  get; set; }
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="EntityInfoStorage"/> class.
@@ -148,11 +171,7 @@ internal class EntityInfoStorage
     /// <param name="capacity">The initial capacity.</param>
     internal EntityInfoStorage(int baseChunkSize, int capacity)
     {
-        EntityData = new JaggedArray<EntityData>(
-            baseChunkSize / Unsafe.SizeOf<EntityData>(),
-            new EntityData(null!, new Slot(-1,-1), 0),
-            capacity
-        );
+        EntityData = new(new(null!, new(-1,-1), 0, -1));
     }
 
     /// <summary>
@@ -164,7 +183,7 @@ internal class EntityInfoStorage
     /// <param name="version">Its version.</param>
     public void Add(int id, Archetype archetype, Slot slot, int version)
     {
-        EntityData.Add(id,new EntityData(archetype, slot, version));
+        EntityData.Add(id,new EntityData(archetype, slot, version, id));
     }
 
     /// <summary>
@@ -213,9 +232,9 @@ internal class EntityInfoStorage
     /// <param name="id">The <see cref="Entity"/>s id.</param>
     /// <param name="exists">If it exists or not</param>
     /// <returns>Its <see cref="Core.EntityData"/>.</returns>
-    public ref EntityData TryGetEntityData(int id, out bool exists)
+    public EntityData TryGetEntityData(int id, out bool exists)
     {
-        return ref EntityData.TryGetValue(id, out exists);
+        return  EntityData.TryGetValue(id, out exists);
     }
 
     /// <summary>
@@ -287,12 +306,6 @@ internal class EntityInfoStorage
                 // Update entity info
                 Move(entity.Id, newArchetype, newArchetypeSlot);
                 newArchetypeSlot++;
-
-                if (newArchetypeSlot.Index >= newArchetype.EntitiesPerChunk)
-                {
-                    newArchetypeSlot.Index = 0;
-                    newArchetypeSlot.ChunkIndex++;
-                }
             }
         }
     }

@@ -6,7 +6,6 @@ using Arch.Core.Utils;
 namespace Arch.Core;
 
 #if PURE_ECS
-
 /// <summary>
 ///     The <see cref="Entity"/> struct
 ///     represents a general-purpose object and can be assigned a set of components that act as data.
@@ -136,6 +135,66 @@ public readonly struct Entity : IEquatable<Entity>, IComparable<Entity>
 }
 #else
 
+public static class EcsBackingData
+{
+    static EcsBackingData()
+    {
+        var maxEntities = 10_000_000;
+        ArchetypeId = new int[maxEntities];
+        WorldId = new int[maxEntities];
+        SlotIndex = new int[maxEntities];
+        IsAlive = new bool[maxEntities];
+        Version = new int[maxEntities];
+        EntityData = new EntityData[maxEntities];
+        for (int i = maxEntities - 1; i >= 0; i--)
+        {
+            FreeIds.Push(i);
+        }
+    }
+
+    public static int[] ArchetypeId;
+    public static int[] WorldId;
+    public static bool[] IsAlive;
+    public static int[] Version;
+    public static int[] SlotIndex;
+    public static EntityData[] EntityData;
+    public static Stack<int> FreeIds = new();
+
+    public static Entity CreateNewEntity(int worldId)
+    {
+        var result = FreeIds.Pop();
+        IsAlive[result] = true;
+        Version[result]++;
+        WorldId[result] = worldId;
+        return new(result, WorldId[result], Version[result]);
+    }
+
+    public static void DestroyEntity(Entity entity)
+    {
+        var id = entity.Id;
+        FreeIds.Push(id);
+        IsAlive[id] = false;
+    }
+}
+
+public record struct FastEntity(int Id, int SlotIndex)
+{
+    public ref int ArchetypeId
+    {
+        get => ref EcsBackingData.ArchetypeId[Id];
+    }
+
+    public ref int WorldId
+    {
+        get => ref EcsBackingData.WorldId[Id];
+    }
+
+    public ref bool IsAlive
+    {
+        get => ref EcsBackingData.IsAlive[Id];
+    }
+}
+
 /// <summary>
 ///     The <see cref="Entity"/> struct
 ///     represents a general-purpose object and can be assigned a set of components that act as data.
@@ -150,14 +209,48 @@ public readonly struct Entity : IEquatable<Entity>, IComparable<Entity>
     public readonly int Id;
 
     /// <summary>
-    /// Its <see cref="World"/> id.
-    /// </summary>
-    public readonly int WorldId;
-
-    /// <summary>
     ///     The version of an entity.
     /// </summary>
     public readonly int Version;
+
+    public FastEntity Fast
+    {
+        get => new(Id, SlotIndex);
+    }
+
+    public ref int StoredVersion
+    {
+        get => ref EcsBackingData.Version[Id];
+    }
+
+    public ref bool IsAlive
+    {
+        get => ref EcsBackingData.IsAlive[Id];
+    }
+
+    /// <summary>
+    /// Its <see cref="World"/> id.
+    /// </summary>
+    public ref int WorldId
+    {
+        get => ref EcsBackingData.WorldId[Id];
+    }
+
+    public ref int ArchetypeId
+    {
+        get => ref EcsBackingData.ArchetypeId[Id];
+    }
+
+    public int SlotIndex
+    {
+        get => EcsBackingData.SlotIndex[Id];
+    }
+
+    public Archetype Archetype
+    {
+        get => Archetype.GetById(ArchetypeId);
+        set => ArchetypeId = value.id;
+    }
 
     /// <summary>
     ///     A null <see cref="Entity"/> used for comparison.
@@ -170,7 +263,6 @@ public readonly struct Entity : IEquatable<Entity>, IComparable<Entity>
     public Entity()
     {
         Id = -1;
-        WorldId = 0;
         Version = -1;
     }
 
@@ -193,11 +285,14 @@ public readonly struct Entity : IEquatable<Entity>, IComparable<Entity>
     /// <param name="id">Its unique id.</param>
     /// <param name="worldId">Its <see cref="World"/> id.</param>
     /// <param name="version">Its version.</param>
-    internal Entity(int id, int worldId, int version)
+    public Entity(int id, int worldId, int version)
     {
         Id = id;
-        WorldId = worldId;
-        Version = version;
+        if (id >= 0)
+        {
+            WorldId = worldId;
+            Version = version;
+        }
     }
 
     /// <summary>
@@ -207,6 +302,16 @@ public readonly struct Entity : IEquatable<Entity>, IComparable<Entity>
     /// <returns>True if equal, false if not.</returns>
     public bool Equals(Entity other)
     {
+        if (Id == -1 && other.Id == -1)
+        {
+            return true;
+        }
+
+        if (Id == -1 || other.Id == -1)
+        {
+            return false;
+        }
+
         return ((Id ^ other.Id) | (WorldId ^ other.WorldId) | (Version ^ other.Version)) == 0;
     }
 

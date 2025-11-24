@@ -1,17 +1,10 @@
-using System.Buffers;
 using System.Diagnostics.Contracts;
-using System.Drawing;
 using Arch.Core.Events;
-using Arch.Core.Extensions;
 using Arch.Core.Extensions.Internal;
-using Arch.Core.Utils;
-using Arch.LowLevel;
-using Collections.Pooled;
 using CommunityToolkit.HighPerformance;
 using Array = System.Array;
 
 namespace Arch.Core;
-
 
 /// <summary>
 ///     The <see cref="Chunks"/> class
@@ -23,17 +16,14 @@ public class Chunks
     ///     Creates a new <see cref="Chunks"/> instance.
     /// </summary>
     /// <param name="capacity">The inital capacity.</param>
-    public Chunks(int capacity = 1)
+    public Chunks(Archetype archetype, int capacity = 1)
     {
-        Items = ArrayPool<Chunk>.Shared.Rent(capacity);
         Count = 0;
         Capacity = capacity;
+        this.archetype = archetype;
     }
 
-    /// <summary>
-    ///     All used <see cref="Chunk"/>s in an <see cref="Array{T}"/>.
-    /// </summary>
-    private Array<Chunk> Items { get; set; }
+    public Archetype archetype;
 
     /// <summary>
     ///     The number of allocated <see cref="Chunk"/>s in the <see cref="Items"/>.
@@ -52,44 +42,12 @@ public class Chunks
     public void Add(in Chunk chunk)
     {
         Debug.Assert(Count + 1 <= Capacity, "Capacity exceeded.");
-        Items[Count++] = chunk;
-    }
-
-    /// <summary>
-    ///     Ensures capacity for this instance.
-    /// </summary>
-    /// <param name="newCapacity">The new capacity</param>
-    public void EnsureCapacity(int newCapacity)
-    {
-        if (newCapacity <= Capacity)
+        archetype.chunk = chunk;
+        Count++;
+        if(Count > 1)
         {
-            return;
+            throw new InvalidOperationException("Chunks can only hold one chunk per archetype in this implementation.");
         }
-
-        var sourceArray = Items;
-        var destinationArray = (Array<Chunk>)ArrayPool<Chunk>.Shared.Rent(newCapacity);
-        Arch.LowLevel.Array.Copy(ref sourceArray, 0, ref destinationArray, 0, Capacity );
-        ArrayPool<Chunk>.Shared.Return(sourceArray, true);
-
-        Items = destinationArray;
-        Capacity = newCapacity;
-    }
-
-    /// <summary>
-    ///     Trims this instance and frees space not required anymore.
-    /// </summary>
-    public void TrimExcess()
-    {
-        // This always spares one single chunk.
-        var minimalSize = Count > 0 ? Count : 1;
-
-        // Decrease chunk size
-        var newChunks = ArrayPool<Chunk>.Shared.Rent(minimalSize);
-        Array.Copy(Items, newChunks, minimalSize);
-        ArrayPool<Chunk>.Shared.Return(Items, true);
-
-        Items = newChunks;
-        Capacity = minimalSize;
     }
 
     /// <summary>
@@ -98,7 +56,7 @@ public class Chunks
     /// <param name="index">The index.</param>
     public ref Chunk this[int index]
     {
-        get => ref Items[index];
+        get => ref archetype.chunk;
     }
 
     /// <summary>
@@ -107,7 +65,7 @@ public class Chunks
     /// <returns></returns>
     public Span<Chunk> AsSpan()
     {
-        return Items.AsSpan();
+        return new[] { archetype.chunk }.AsSpan();
     }
 
     /// <summary>
@@ -132,7 +90,7 @@ public class Chunks
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static implicit operator Chunk[](Chunks instance)
     {
-        return instance.Items;
+        return [instance.archetype.chunk];
     }
 }
 
@@ -144,7 +102,6 @@ public class Chunks
 [SkipLocalsInit]  // Really a speed improvements? The benchmark only showed a slight improvement
 public partial struct Chunk
 {
-
     /// <summary>
     ///     Initializes a new instance of the <see cref="Chunk"/> struct.
     ///     Automatically creates a lookup array for quick access to internal components.
@@ -182,19 +139,19 @@ public partial struct Chunk
     ///     The <see cref="Arch.Core.Entity"/>'s that are stored in this chunk.
     ///     Can be accessed during the iteration.
     /// </summary>
-    public readonly Entity[] Entities { [Pure] get; }  // 8 Byte
+    public Entity[] Entities { [Pure] get; internal set; }  // 8 Byte
 
     /// <summary>
     ///     The component arrays in which the components of the <see cref="Arch.Core.Entity"/>'s are stored.
     ///     Represent the component structure.
     ///     They can be accessed quickly using the <see cref="ComponentIdToArrayIndex"/> or one of the chunk methods.
     /// </summary>
-    public readonly Array[] Components { [Pure] get; }  // 8 Byte
+    public Array[] Components { [Pure] get; internal set; }  // 8 Byte
 
     /// <summary>
     ///     The lookup array that maps component ids to component array indexes to quickly access them.
     /// </summary>
-    public readonly int[] ComponentIdToArrayIndex { [Pure] get; }  // 8 Byte
+    public int[] ComponentIdToArrayIndex { [Pure] get; internal set; }  // 8 Byte
 
     /// <summary>
     ///     The number of occupied <see cref="Arch.Core.Entity"/> slots in this <see cref="Chunk"/>.
@@ -204,7 +161,7 @@ public partial struct Chunk
     /// <summary>
     ///     The number of possible <see cref="Arch.Core.Entity"/>'s in this <see cref="Chunk"/>.
     /// </summary>
-    public int Capacity { [Pure] get; }   // 4 Byte
+    public int Capacity { [Pure] get; internal set; }   // 4 Byte
 
     /// <summary>
     ///     The space that is left in this instance.
@@ -217,9 +174,63 @@ public partial struct Chunk
     public readonly bool IsFull { [Pure] get => Count >= Capacity; }
 
     /// <summary>
-    ///     Checks whether this instance is full or not.
+    ///     Checks whether this instance has empty slots left.
     /// </summary>
-    public readonly bool IsEmpty { [Pure] get => Count < Capacity; }
+    public readonly bool IsNotFull { [Pure] get => Count < Capacity; }
+
+    public void ShrinkToFit()
+    {
+        if (Count >= Capacity)
+        {
+            return;
+        }
+
+        // Resize entities array
+        var newEntities = new Entity[Count];
+        Array.Copy(Entities, newEntities, Count);
+
+        // Resize component arrays
+        var newComponents = new Array[Components.Length];
+        for (var i = 0; i < Components.Length; i++)
+        {
+            var oldArray = Components[i];
+            var newArray = ArrayRegistry.GetArray(oldArray.GetType().GetElementType()!, Count);
+            Array.Copy(oldArray, newArray, Count);
+            newComponents[i] = newArray;
+        }
+
+        // Assign new arrays
+        Entities = newEntities;
+        Components = newComponents;
+        Capacity = Count;
+    }
+
+    public void ExpandCapacity(int newCapacity)
+    {
+        if (newCapacity <= Capacity)
+        {
+            return;
+        }
+
+        // Resize entities array
+        var newEntities = new Entity[newCapacity];
+        Array.Copy(Entities, newEntities, Count);
+
+        // Resize component arrays
+        var newComponents = new Array[Components.Length];
+        for (var i = 0; i < Components.Length; i++)
+        {
+            var oldArray = Components[i];
+            var newArray = ArrayRegistry.GetArray(oldArray.GetType().GetElementType()!, newCapacity);
+            Array.Copy(oldArray, newArray, Count);
+            newComponents[i] = newArray;
+        }
+
+        // Assign new arrays
+        Entities = newEntities;
+        Components = newComponents;
+        Capacity = newCapacity;
+    }
 
     /// <summary>
     ///     Inserts an entity into the <see cref="Chunk"/>.

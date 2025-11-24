@@ -188,7 +188,7 @@ public ref struct QueryChunkEnumerator
         // Make it move once, otherwise we can not check directly for Current.Size which results in bad behaviour
         if (_archetypeEnumerator.MoveNext())
         {
-            _index = _archetypeEnumerator.Current.Count+1;
+            _index = 0 + 1;
         }
     }
 
@@ -213,7 +213,7 @@ public ref struct QueryChunkEnumerator
                 return false;
             }
 
-            _index = _archetypeEnumerator.Current.Count;
+            _index = 0;
             return true;
         }
     }
@@ -230,7 +230,7 @@ public ref struct QueryChunkEnumerator
         // Make it move once, otherwise we can not check directly for Current.Size which results in bad behaviour
         if (_archetypeEnumerator.MoveNext())
         {
-            _index = _archetypeEnumerator.Current.Count + 1;
+            _index = 0 + 1;
         }
     }
 

@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Diagnostics.Contracts;
+using System.Net.NetworkInformation;
 using Arch.Core.Extensions;
 using Arch.Core.Extensions.Internal;
 using Arch.Core.Utils;
@@ -9,24 +10,27 @@ using Collections.Pooled;
 using CommunityToolkit.HighPerformance;
 using Array = System.Array;
 using System.Runtime.InteropServices;
+using Arch.Core.Extensions.Dangerous;
 
 namespace Arch.Core;
 
 /// <summary>
 ///     The <see cref="Slot"/> struct references an <see cref="Arch.Core.Entity"/> entry within an <see cref="Archetype"/> using a reference to its <see cref="Chunk"/> and its index.
 /// </summary>
+[StructLayout(LayoutKind.Explicit, Size = sizeof(int))]
 [SkipLocalsInit]
 public record struct Slot
 {
     /// <summary>
     ///     The index of the <see cref="Arch.Core.Entity"/> in the <see cref="Chunk"/>.
     /// </summary>
+    [FieldOffset(0)]
     public int Index;
 
     /// <summary>
     ///     The index of the <see cref="Chunk"/> in which the <see cref="Arch.Core.Entity"/> is located.
     /// </summary>
-    public int ChunkIndex;
+    public int ChunkIndex => 0;
 
     /// <summary>
     ///     Initializes a new instance of the <see cref="Slot"/> struct.
@@ -36,7 +40,6 @@ public record struct Slot
     public Slot(int index, int chunkIndex)
     {
         Index = index;
-        ChunkIndex = chunkIndex;
     }
 
     /// <summary>
@@ -62,26 +65,6 @@ public record struct Slot
     }
 
     /// <summary>
-    ///     Validates the <see cref="Slot"/>, moves the <see cref="Slot"/> if it is outside a <see cref="Chunk.Capacity"/> to match it.
-    /// </summary>
-    /// <returns></returns>
-    public void Wrap(int capacity)
-    {
-        // Result outside valid chunk, wrap into next one
-        if (Index < capacity)
-        {
-            return;
-        }
-
-        // Index outside of its chunk, so we calculate how many times a chunk fit into the index for adjusting the chunkindex to that position.
-        // Floor since we do not neet a rounded value since the index is within that chunk and not the next one.
-        ChunkIndex += (int)Math.Floor(Index / (float)capacity);
-
-        // After moving the chunk index we can simply take the rest and assign it as a index.
-        Index %= capacity;
-    }
-
-    /// <summary>
     ///     Moves or shifts this <see cref="Slot"/> by one slot forward.
     ///     Ensures that the slots chunkindex updated properly once the end was reached.
     /// </summary>
@@ -91,7 +74,6 @@ public record struct Slot
     public static Slot Shift(ref Slot source, int sourceCapacity)
     {
         source.Index++;
-        source.Wrap(sourceCapacity);
         return source;
     }
 
@@ -108,7 +90,6 @@ public record struct Slot
         var freeSpot = destination;
         var resultSlot = source + freeSpot;
         resultSlot.Index += source.ChunkIndex * (sourceCapacity - destinationCapacity); // Berücksichtigen der differenz zwischen den chunks und weiter verschieben.
-        resultSlot.Wrap(destinationCapacity);
 
         return resultSlot;
     }
@@ -253,6 +234,8 @@ public class Archetypes : IDisposable
     }
 }
 
+public interface SingleArchetypeComponent;
+
 /// <summary>
 ///     The <see cref="Archetype"/> class contains all <see cref="Arch.Core.Entity"/>'s of a unique combination of component types.
 ///     These are stored in multiple <see cref="Chunk"/>'s located within the <see cref="Chunks"/>-Array.
@@ -265,7 +248,12 @@ public sealed partial class Archetype
     ///     Is being stored here since all <see cref="Chunks"/> share the same instance to reduce allocations.
     /// </summary>
     private readonly int[] _componentIdToArrayIndex;
-
+    public int id;
+    public static List<Archetype> archetypes = [];
+    public static Archetype GetById(int id)
+    {
+        return archetypes[id];
+    }
     /// <summary>
     ///     Initializes a new instance of the <see cref="Archetype"/> class by a group of components.
     /// </summary>
@@ -274,6 +262,8 @@ public sealed partial class Archetype
     /// <param name="baseChunkEntityCount">The minimum amount of entities per <see cref="Chunk"/>.</param>
     internal Archetype(Signature signature, int baseChunkSize, int baseChunkEntityCount)
     {
+        archetypes.Add(this);
+        id = archetypes.Count - 1;
         Signature = signature;
         BaseChunkSize = baseChunkSize;
 
@@ -286,11 +276,12 @@ public sealed partial class Archetype
         _componentIdToArrayIndex = signature.Components.ToLookupArray();
 
         // Setup arrays and mappings
-        Chunks = new Chunks(1);
-        AddChunk();
+        Chunks = new(this);
 
         _addEdges = new SparseJaggedArray<Archetype>(BucketSize);
         _removeEdges = new SparseJaggedArray<Archetype>(BucketSize);
+        Chunks.Add(new(EntitiesPerChunk, _componentIdToArrayIndex, Signature));
+        FastEntityAccessorCache.RefreshForChunk(this);
     }
 
     /// <summary>
@@ -335,46 +326,16 @@ public sealed partial class Archetype
     /// </summary>
     public Chunks Chunks {  get;  internal set; }
 
-    /// <summary>
-    ///     The number of <see cref="Chunk"/>'s within the <see cref="Chunks"/> array.
-    /// </summary>
-    public int ChunkCount {
-        get
-        {
-            return Chunks.Count;
-        }
-    }
-
-    /// <summary>
-    ///     How many <see cref="Chunk"/>' have been deposited within the <see cref="Chunks"/> array.
-    ///     The total capacity.
-    /// </summary>
-    public int ChunkCapacity {
-        get
-        {
-            return Chunks.Capacity;
-        }
-    }
-
-    /// <summary>
-    ///     The number of filled chunks within the <see cref="Chunks"/> array.
-    /// </summary>
-    public int Count { get; internal set; }
-
-    /// <summary>
-    ///     Points to the current <see cref="Chunk"/> in use with remaining capacity.
-    /// </summary>
-    internal ref Chunk CurrentChunk {  get => ref Chunks[Count]; }
-
+    public Chunk chunk;
     /// <summary>
     ///     Points to the last <see cref="Slot"/>.
     /// </summary>
     internal Slot CurrentSlot
     {
-         get
+        get
         {
-            var lastRow = CurrentChunk.Count - 1;
-            return new(lastRow, Count);
+            var lastRow = Chunks[0].Count - 1;
+            return new(lastRow, 0);
         }
     }
 
@@ -392,21 +353,7 @@ public sealed partial class Archetype
     /// </summary>
     public int EntityCapacity
     {
-        get => ChunkCapacity * EntitiesPerChunk;
-    }
-
-    /// <summary>
-    ///     Creates a new <see cref="Chunk"/> at the last <see cref="ChunkCount"/>.
-    /// </summary>
-    /// <returns>The new created <see cref="Chunk"/>.</returns>
-    public ref Chunk AddChunk()
-    {
-        Chunks.EnsureCapacity(Chunks.Count+1);
-
-        // Insert chunk
-        var count = Chunks.Count;
-        Chunks.Add(new Chunk(EntitiesPerChunk, _componentIdToArrayIndex, Signature));
-        return ref Chunks[count];
+        get => EntitiesPerChunk;
     }
 
     /// <summary>
@@ -416,7 +363,8 @@ public sealed partial class Archetype
     /// <returns>A reference to the <see cref="Chunk"/> at the given index.</returns>
     public ref Chunk GetChunk(int index)
     {
-        return ref Chunks[index];
+        if (index > 0) throw new Exception();
+        return ref Chunks[0];
     }
 
     /// <summary>
@@ -427,43 +375,23 @@ public sealed partial class Archetype
     /// <param name="chunk">The chunk in which the <see cref="Entity"/> was created in.</param>
     /// <param name="slot">The <see cref="Slot"/> in which it was deposited.</param>
     /// <returns>The amount of newly allocated entities in <see cref="Chunk"/>s.</returns>
-    internal int Add(Entity entity, out Chunk chunk, out Slot slot)  // TODO: Store chunk reference in slot?
+    internal int Add(Entity entity, out Chunk chunk, out Slot slot) // TODO: Store chunk reference in slot?
     {
         EntityCount++;
 
         // Storing stack variables to prevent multiple times accessing those fields.
-        var count = Count;
-        ref var currentChunk = ref GetChunk(count);
+        ref var currentChunk = ref GetChunk(0);
 
-        // Fill chunk
-        if (currentChunk.IsEmpty)
+        // If it is full then expand
+        if (currentChunk.IsFull)
         {
-            slot = new Slot(currentChunk.Add(entity), count);
-            chunk = currentChunk;
-
-            return 0;
+            currentChunk.ExpandCapacity(currentChunk.Capacity * 2);
         }
 
-        // Chunk full? Use next allocated chunk
-        count++;
-        if (count < ChunkCapacity)
-        {
-            currentChunk = ref GetChunk(count);
-
-            slot = new Slot(currentChunk.Add(entity), count);
-            chunk = currentChunk;
-            Count = count;
-
-            return 0;
-        }
-
-        // No more free allocated chunks? Create new chunk
-        ref var newChunk = ref AddChunk();
-        slot = new Slot(newChunk.Add(entity), count);
-        chunk = newChunk;
-        Count = count;
-
-        return EntitiesPerChunk;
+        slot = new(currentChunk.Add(entity), 0);
+        chunk = currentChunk;
+        FastEntityAccessorCache.RefreshForChunk(this);
+        return 0;
     }
 
     /// <summary>
@@ -475,27 +403,16 @@ public sealed partial class Archetype
     {
         EnsureEntityCapacity(EntityCount + amount);
 
-        // Track created and the last filled chunk
-        var created = 0;
-        var chunkIndex = Count;
+        ref var chunk = ref GetChunk(0);
+        var fillAmount = Math.Min(chunk.Buffer, amount);
 
-        // Fill with entities until no entity is left or chunk capacity is reached
-        for(var index = Count; index < ChunkCapacity && created < amount; index++)
-        {
-            ref var chunk = ref GetChunk(index);
-            var fillAmount = Math.Min(chunk.Buffer, amount - created);
-
-            // Copy batch of entities into the chunk
-            Chunk.Copy(ref entities, created, ref chunk, chunk.Count, fillAmount);
-            chunk.Count += fillAmount;
-
-            chunkIndex = index;
-            created += fillAmount;
-        }
+        // Copy batch of entities into the chunk
+        Chunk.Copy(ref entities, 0, ref chunk, chunk.Count, fillAmount);
+        chunk.Count += fillAmount;
 
         // Set counts
         EntityCount += amount;
-        Count = chunkIndex;  // To the last filled chunk
+        FastEntityAccessorCache.RefreshForChunk(this);
     }
 
     /// <summary>
@@ -508,18 +425,10 @@ public sealed partial class Archetype
     {
         // Move the last entity from the last chunk into the chunk to replace the removed entity directly
         ref var chunk = ref GetChunk(slot.ChunkIndex);
-        ref var lastChunk = ref CurrentChunk;
+        ref var lastChunk = ref GetChunk(0);
 
         movedEntityId = chunk.Transfer(slot.Index, ref lastChunk);
         EntityCount--;
-
-        // Return to prevent that Size decreases when chunk IS not Empty and to prevent Size becoming 0 or -1.
-        if (lastChunk.Count > 0 || Count <= 0)
-        {
-            return;
-        }
-
-        Count--;
     }
 
     /// <summary>
@@ -527,7 +436,7 @@ public sealed partial class Archetype
     /// </summary>
     /// <param name="slot">The <see cref="Slot"/>.</param>
     /// <returns>A reference to the <see cref="Arch.Core.Entity"/>.</returns>
-    internal ref Entity Entity(scoped ref Slot slot)
+    internal ref Entity Entity(Slot slot)
     {
         ref var chunk = ref GetChunk(slot.ChunkIndex);
         return ref chunk.Entity(slot.Index);
@@ -625,10 +534,8 @@ public sealed partial class Archetype
     /// <returns>A reference to the component.</returns>
     internal ref T Get<T>(scoped ref Slot slot)
     {
-        ref var chunk = ref GetChunk(slot.ChunkIndex);
         return ref chunk.Get<T>(slot.Index);
     }
-
 
     /// <summary>
     ///     Sets a component value for all entities within an <see cref="Archetype"/> in a certain range of <see cref="Slot"/>s
@@ -660,7 +567,7 @@ public sealed partial class Archetype
     /// <returns>An <see cref="Enumerator{T}"/>.</returns>
     public Enumerator<Chunk> GetEnumerator()
     {
-        return new Enumerator<Chunk>(Chunks.AsSpan()[..ChunkCount]);
+        return new Enumerator<Chunk>(Chunks.AsSpan());
     }
 
     /// <summary>
@@ -687,7 +594,6 @@ public sealed partial class Archetype
     /// </summary>
     public void Clear()
     {
-        Count = 0;
         EntityCount = 0;
         Chunks.Clear();
     }
@@ -698,7 +604,7 @@ public sealed partial class Archetype
     /// <returns>A string.</returns>
     public override string ToString()
     {
-        return $"Archetype {{ {nameof(Signature)} = {{ {Signature} }}, {nameof(BitSet)} = {{ {BitSet} }}, {nameof(EntitiesPerChunk)} = {EntitiesPerChunk}, {nameof(ChunkSize)} = {ChunkSize}, {nameof(ChunkCapacity)} = {ChunkCapacity}, {nameof(ChunkCount)} = {ChunkCount}, {nameof(EntityCapacity)} = {EntityCapacity}, {nameof(EntityCount)} = {EntityCount} }}}}";
+        return $"Archetype {{ {nameof(Signature)} = {{ {Signature} }}, {nameof(BitSet)} = {{ {BitSet} }}, {nameof(EntitiesPerChunk)} = {EntitiesPerChunk}, {nameof(ChunkSize)} = {ChunkSize}, {nameof(EntityCapacity)} = {EntityCapacity}, {nameof(EntityCount)} = {EntityCount} }}}}";
     }
 }
 
@@ -748,37 +654,13 @@ public sealed unsafe partial class Archetype
 public sealed partial class Archetype
 {
     /// <summary>
-    ///     Ensures the capacity of the <see cref="Chunks"/> array.
-    ///     Increases the <see cref="ChunkCapacity"/>.
-    /// </summary>
-    /// <param name="newCapacity">The amount of <see cref="Chunk"/>'s required, in total.</param>
-    private void EnsureChunkCapacity(int newCapacity)
-    {
-        Chunks.EnsureCapacity(newCapacity);
-    }
-
-    /// <summary>
     ///     Ensures the capacity of the <see cref="Chunks"/> array for a certain amount of <see cref="Entity"/>s.
     ///     Increases the <see cref="ChunkCapacity"/> to fit all entities within it.
     /// </summary>
     /// <param name="newCapacity">The amount of <see cref="Entity"/>'s required, in total.</param>
     internal void EnsureEntityCapacity(int newCapacity)
     {
-        // Calculate amount of required chunks.
-        var neededChunks = (int)Math.Ceiling((float)newCapacity / EntitiesPerChunk);
-        if (ChunkCount >= neededChunks)
-        {
-            return;
-        }
-
-        // Set capacity and insert new empty chunks.
-        var previousCapacity = ChunkCapacity;
-        EnsureChunkCapacity(neededChunks);
-
-        for (var index = previousCapacity; index < neededChunks; index++)
-        {
-            Chunks.Add(new Chunk(EntitiesPerChunk, _componentIdToArrayIndex, Signature));
-        }
+        GetChunk(0).ExpandCapacity(newCapacity);
     }
 
     /// <summary>
@@ -787,8 +669,8 @@ public sealed partial class Archetype
     /// </summary>
     internal void TrimExcess()
     {
-        Chunks.Count = Count + 1; // By setting the Count we will assure that unnecessary chunks are trimmed.
-        Chunks.TrimExcess();
+        GetChunk(0).ShrinkToFit();
+        FastEntityAccessorCache.RefreshForChunk(this);
     }
 }
 
@@ -842,21 +724,18 @@ public sealed partial class Archetype
     {
         // Loop over chunks and calculate next n slots.
         var next = 0;
-        for (var chunkIndex = archetype.Count; chunkIndex < archetype.ChunkCapacity && amount > 0; chunkIndex++)
+
+        ref var chunk = ref archetype.GetChunk(0);
+        var chunkSize = chunk.Count;
+        chunk.ExpandCapacity(chunkSize + amount);
+
+        // Put n empty slots into the slots span
+        for (var index = chunkSize; index < chunkSize + amount; index++)
         {
-            ref var chunk = ref archetype.GetChunk(chunkIndex);
-            var chunkSize = chunk.Count;
-            var fillLimit = Math.Min(chunk.Capacity - chunkSize, amount);
-
-            // Put n empty slots into the slots span
-            for (var index = chunkSize; index < chunkSize+fillLimit; index++)
-            {
-                slots[next++] = new Slot(index, chunkIndex);
-            }
-
-            amount -= fillLimit;
+            slots[next++] = new Slot(index, 0);
         }
 
+        FastEntityAccessorCache.RefreshForChunk(archetype);
         return next;
     }
 
@@ -869,42 +748,43 @@ public sealed partial class Archetype
     /// <param name="destination">The destination <see cref="Archetype"/>.</param>
     internal static void Copy(Archetype source, Archetype destination)
     {
-        // Make sure other archetype can fit additional entities from this archetype.
-        destination.EnsureEntityCapacity(destination.EntityCount + source.EntityCount);
-        var sourceSignature = source.Signature;
-
-        // Iterate each source chunk to copy them
-        for (var sourceChunkIndex = 0; sourceChunkIndex <= source.Count; sourceChunkIndex++)
-        {
-            ref var sourceChunk = ref source.GetChunk(sourceChunkIndex);
-
-            var amountCopied = 0;
-            var chunkIndex = 0;
-
-            // Loop over destination chunk and fill them with the source chunk till either the source chunk is empty or theres no more capacity
-            for (int destinationChunkIndex = destination.Count; destinationChunkIndex < destination.ChunkCapacity && sourceChunk.Count > 0; destinationChunkIndex++)
-            {
-                // Determine amount that can be copied into destination
-                ref var destinationChunk = ref destination.GetChunk(destinationChunkIndex);
-                var remainingCapacity = destinationChunk.Buffer;
-                var amountToCopy = Math.Min(sourceChunk.Count, remainingCapacity);
-
-                Chunk.Copy(ref sourceChunk, amountCopied, ref sourceSignature, ref destinationChunk, destinationChunk.Count, amountToCopy);
-
-                // Apply copied amount to track the progress
-                sourceChunk.Count -= amountToCopy;
-                destinationChunk.Count += amountToCopy;
-                amountCopied += amountToCopy;
-                chunkIndex = destinationChunkIndex;  // Track the last destination chunk we filled, important
-            }
-
-            destination.Count = chunkIndex;
-        }
-
-        // Update entity counts
-        destination.EntityCount += source.EntityCount;
-        source.EntityCount = 0;
-        source.Count = 0;
+        throw new NotImplementedException();
+        // // Make sure other archetype can fit additional entities from this archetype.
+        // destination.EnsureEntityCapacity(destination.EntityCount + source.EntityCount);
+        // var sourceSignature = source.Signature;
+        //
+        // // Iterate each source chunk to copy them
+        // for (var sourceChunkIndex = 0; sourceChunkIndex <= source.Count; sourceChunkIndex++)
+        // {
+        //     ref var sourceChunk = ref source.GetChunk(sourceChunkIndex);
+        //
+        //     var amountCopied = 0;
+        //     var chunkIndex = 0;
+        //
+        //     // Loop over destination chunk and fill them with the source chunk till either the source chunk is empty or theres no more capacity
+        //     for (int destinationChunkIndex = destination.Count; destinationChunkIndex < destination.ChunkCapacity && sourceChunk.Count > 0; destinationChunkIndex++)
+        //     {
+        //         // Determine amount that can be copied into destination
+        //         ref var destinationChunk = ref destination.GetChunk(destinationChunkIndex);
+        //         var remainingCapacity = destinationChunk.Buffer;
+        //         var amountToCopy = Math.Min(sourceChunk.Count, remainingCapacity);
+        //
+        //         Chunk.Copy(ref sourceChunk, amountCopied, ref sourceSignature, ref destinationChunk, destinationChunk.Count, amountToCopy);
+        //
+        //         // Apply copied amount to track the progress
+        //         sourceChunk.Count -= amountToCopy;
+        //         destinationChunk.Count += amountToCopy;
+        //         amountCopied += amountToCopy;
+        //         chunkIndex = destinationChunkIndex;  // Track the last destination chunk we filled, important
+        //     }
+        //
+        //     destination.Count = chunkIndex;
+        // }
+        //
+        // // Update entity counts
+        // destination.EntityCount += source.EntityCount;
+        // source.EntityCount = 0;
+        // source.Count = 0;
     }
 
     /// <summary>
@@ -916,29 +796,30 @@ public sealed partial class Archetype
     /// <param name="destinationIndex">The <see cref="Chunk"/>-Index in the <see cref="destination"/> where start to inser the copy.</param>
     internal static void CopyComponents(Archetype source, int sourceIndex, Archetype destination, int destinationIndex, int length)
     {
-        // Iterate each source chunk to copy them
-        var sourceSignature = source.Signature;
-        for (var sourceChunkIndex = sourceIndex; sourceChunkIndex <= length; sourceChunkIndex++)
-        {
-            ref var sourceChunk = ref source.GetChunk(sourceChunkIndex);
-
-            var amountLeft = sourceChunk.Count;
-            var amountCopied = 0;
-
-            // Loop over destination chunk and fill them with the source chunk till either the source chunk is empty or theres no more capacity
-            for (int destinationChunkIndex = destinationIndex; destinationChunkIndex < destination.ChunkCapacity && amountLeft > 0; destinationChunkIndex++)
-            {
-                // Determine amount that can be copied into destination
-                ref var destinationChunk = ref destination.GetChunk(destinationChunkIndex);
-                var amountToCopy = Math.Min(amountLeft, destinationChunk.Buffer);
-
-                Chunk.CopyComponents(ref sourceChunk, amountCopied, ref sourceSignature, ref destinationChunk, destinationChunk.Count, amountToCopy);
-
-                // Apply copied amount to track the progress
-                amountLeft -= amountToCopy;
-                amountCopied += amountToCopy;
-            }
-        }
+        throw new NotImplementedException();
+        // // Iterate each source chunk to copy them
+        // var sourceSignature = source.Signature;
+        // for (var sourceChunkIndex = sourceIndex; sourceChunkIndex <= length; sourceChunkIndex++)
+        // {
+        //     ref var sourceChunk = ref source.GetChunk(sourceChunkIndex);
+        //
+        //     var amountLeft = sourceChunk.Count;
+        //     var amountCopied = 0;
+        //
+        //     // Loop over destination chunk and fill them with the source chunk till either the source chunk is empty or theres no more capacity
+        //     for (int destinationChunkIndex = destinationIndex; destinationChunkIndex < destination.ChunkCapacity && amountLeft > 0; destinationChunkIndex++)
+        //     {
+        //         // Determine amount that can be copied into destination
+        //         ref var destinationChunk = ref destination.GetChunk(destinationChunkIndex);
+        //         var amountToCopy = Math.Min(amountLeft, destinationChunk.Buffer);
+        //
+        //         Chunk.CopyComponents(ref sourceChunk, amountCopied, ref sourceSignature, ref destinationChunk, destinationChunk.Count, amountToCopy);
+        //
+        //         // Apply copied amount to track the progress
+        //         amountLeft -= amountToCopy;
+        //         amountCopied += amountToCopy;
+        //     }
+        // }
     }
 
     /// <summary>

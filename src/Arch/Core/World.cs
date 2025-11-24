@@ -174,7 +174,6 @@ public partial class World : IDisposable
         // Entity stuff.
         Archetypes = new Archetypes(archetypeCapacity);
         EntityInfo = new EntityInfoStorage(baseChunkSize, entityCapacity);
-        RecycledIds = new Queue<RecycledEntity>(entityCapacity);
 
         // Query.
         QueryCache = new Dictionary<QueryDescription, Query>(archetypeCapacity);
@@ -213,11 +212,6 @@ public partial class World : IDisposable
     internal EntityInfoStorage EntityInfo {  get; }
 
     /// <summary>
-    ///     Stores recycled <see cref="Entity"/> IDs and their last version.
-    /// </summary>
-    internal Queue<RecycledEntity> RecycledIds {  get; set; }
-
-    /// <summary>
     ///     A cache to map <see cref="QueryDescription"/> to their <see cref="Core.Query"/>, to avoid allocs.
     /// </summary>
     internal Dictionary<QueryDescription, Query> QueryCache {  get; set; }
@@ -241,9 +235,7 @@ public partial class World : IDisposable
     /// <remarks>Does not add it to the <see cref="EntityInfo"/> yet.</remarks>
     private void GetOrCreateEntityInternal(out Entity entity)
     {
-        var recycle = RecycledIds.TryDequeue(out var recycledId);
-        var recycled = recycle ? recycledId : new RecycledEntity(Size, 1);
-        entity = new Entity(recycled.Id, Id, recycled.Version);
+        entity = EcsBackingData.CreateNewEntity(Id);
         Size++;
     }
 
@@ -254,8 +246,7 @@ public partial class World : IDisposable
     /// <remarks>Also removes it from the <see cref="EntityInfo"/>.</remarks>
     private void DestroyEntityInternal(Entity entity)
     {
-        var recycledEntity = new RecycledEntity(entity.Id, unchecked(entity.Version + 1));
-        RecycledIds.Enqueue(recycledEntity);
+        EcsBackingData.DestroyEntity(entity);
         EntityInfo.Remove(entity.Id);
         Size--;
     }
@@ -324,7 +315,7 @@ public partial class World : IDisposable
     internal void Move(Entity entity, ref EntityData data, Archetype source, Archetype destination, out Slot destinationSlot)
     {
         // Entity should match the supplied EntityData.
-        Debug.Assert(entity == data.Archetype.Entity(ref data.Slot));
+        Debug.Assert(entity == data.Archetype.Entity(data.Slot));
 
         // A common mistake, happening in many cases.
         Debug.Assert(source != destination, "From-Archetype is the same as the To-Archetype. Entities cannot move within the same archetype using this function. Probably an attempt was made to attach already existing components to the entity or to remove non-existing ones.");
@@ -497,7 +488,6 @@ public partial class World : IDisposable
         Size = 0;
 
         // Clear
-        RecycledIds.Clear();
         GroupToArchetype.Clear();
         EntityInfo.Clear();
         QueryCache.Clear();
@@ -544,7 +534,6 @@ public partial class World : IDisposable
 
         // Dispose
         world.GroupToArchetype.Clear();
-        world.RecycledIds.Clear();
         world.QueryCache.Clear();
         world.Archetypes.Clear();
     }
@@ -578,7 +567,58 @@ public partial class World
     /// </summary>
     internal Dictionary<int, Archetype> GroupToArchetype {  get; set; }
 
-        /// <summary>
+    private Dictionary<Type, Archetype> SingleTypeArchetypes { get; } = new();
+
+    public Archetype? GetSingleArchetypeComponentArchetype<T>() where T : SingleArchetypeComponent
+    {
+        if (SingleTypeArchetypes.TryGetValue(typeof(T), out var archetype))
+        {
+            return archetype;
+        }
+
+        return null;
+    }
+
+    public FastEntityAccessorT<T> GetSingleArchetypeComponentAccessor<T>() where T : SingleArchetypeComponent
+    {
+        var archetype = GetSingleArchetypeComponentArchetype<T>();
+        if (archetype == null)
+        {
+            // Return empty accessor.
+            // It shouldn't be accessed anyway, as there is no archetype with the component.
+            // But in case it is then it would simply throw a null reference exception.
+            return new(new(null!));
+        }
+        var archetypeId = archetype.id;
+        var componentId = Component<T>.ComponentType.Id;
+        return new(FastEntityAccessorCache.GetCacheItem(archetypeId, componentId));
+    }
+
+    private void CheckIfAnyComponentIsSingleArchetypeComponent(Signature signature, Archetype archetype)
+    {
+        foreach (var componentType in signature.Components)
+        {
+            if (typeof(SingleArchetypeComponent).IsAssignableFrom(componentType))
+            {
+                // If the type is already registered, throw because it means two archetypes have the same single archetype component
+                SingleTypeArchetypes.Add(componentType, archetype);
+            }
+        }
+    }
+
+    private void ClearComponentsFromSingleArchetype(Archetype archetype)
+    {
+        var items = SingleTypeArchetypes.ToList();
+        foreach (var (type, registeredArchetype) in items)
+        {
+            if (registeredArchetype == archetype)
+            {
+                SingleTypeArchetypes.Remove(type);
+            }
+        }
+    }
+
+    /// <summary>
     ///     Ensures the capacity of a specific <see cref="Archetype"/> determined by the <see cref="Signature"/>.
     /// </summary>
     /// <param name="signature">The <see cref="Signature"/>.</param>
@@ -631,7 +671,7 @@ public partial class World
         // Archetypes always allocate one single chunk upon construction
         Capacity += archetype.EntitiesPerChunk;
         EntityInfo.EnsureCapacity(Capacity);
-
+        CheckIfAnyComponentIsSingleArchetypeComponent(signature, archetype);
         return archetype;
     }
 
@@ -708,12 +748,6 @@ public partial class World
             archetype.TrimExcess();
             Capacity += archetype.EntityCapacity;
         }
-
-        // Traverse recycled ids and remove all that are higher than the current capacity.
-        // If we do not do this, a new entity might get a id higher than the entityinfo array which causes it to go out of bounds.
-        RecycledIds = new Queue<RecycledEntity>(
-            RecycledIds.Where(entity => entity.Id < Capacity)
-        );
     }
 }
 
@@ -1002,7 +1036,7 @@ public partial class World
         {
             GetOrCreateEntityInternal(out var entity);
             entities[index] = entity;
-            entityData[index] = new EntityData(archetype, slots[index], entity.Version);
+            entityData[index] = new(archetype, slots[index], entity.Version, entity.Id);
         }
     }
 
@@ -1102,7 +1136,7 @@ public partial class World
     [Pure]
     public bool Has<T>(Entity entity)
     {
-        var archetype = EntityInfo.GetArchetype(entity.Id);
+        var archetype = entity.Archetype;
         return archetype.Has<T>();
     }
 
@@ -1119,6 +1153,18 @@ public partial class World
         var slot = entitySlot.Slot;
         var archetype = entitySlot.Archetype;
         return ref archetype.Get<T>(ref slot);
+    }
+
+    [Pure]
+    public T[] GetComponentArray<T>(Entity entity)
+    {
+        var slot = EntityInfo.GetEntityData(entity.Id);
+        ref var chunk = ref slot.Archetype.GetChunk(0);
+        slot.Archetype.TryIndex<T>(out int compIndex);
+        Debug.Assert(compIndex != -1 && compIndex < chunk.Components.Length, $"Index is out of bounds, component {typeof(T)} with id {compIndex} does not exist in this archetype.");
+
+        var array = Unsafe.As<T[]>(chunk.Components.DangerousGetReferenceAt(compIndex));
+        return array;
     }
 
     /// <summary>
@@ -1641,8 +1687,7 @@ public partial class World
             return false;
         }
 
-        ref var entityData = ref EntityInfo.TryGetEntityData(entity.Id, out var entityDataExists);
-        return entityDataExists && entityData.Version == entity.Version;
+        return entity.IsAlive && entity.StoredVersion == entity.Version;
     }
 
     /// <summary>
@@ -1652,17 +1697,17 @@ public partial class World
     /// <param name="exists"></param>
     /// <returns>Its <see cref="EntityData"/>.</returns>
     [Pure]
-    public ref EntityData IsAlive(Entity entity, out bool exists)
+    public EntityData IsAlive(Entity entity, out bool exists)
     {
         if (entity.Version <= 0)
         {
             exists = false;
-            return ref Unsafe.NullRef<EntityData>();
+            return  Unsafe.NullRef<EntityData>();
         }
 
-        ref var entityData = ref EntityInfo.TryGetEntityData(entity.Id, out var entityDataExists);
+        var entityData =  EntityInfo.TryGetEntityData(entity.Id, out var entityDataExists);
         exists = entityDataExists && entityData.Version == entity.Version;
-        return ref entityData;
+        return  entityData;
     }
 
     /// <summary>

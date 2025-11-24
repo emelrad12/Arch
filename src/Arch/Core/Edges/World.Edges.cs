@@ -21,6 +21,7 @@ public partial class World
         if (!oldArchetype.HasAddEdge(edgeIndex))
         {
             var newSignature = Signature.Add(oldArchetype.Signature, type);
+            ClearComponentsFromSingleArchetype(oldArchetype);
             archetype = GetOrCreate(newSignature);
             oldArchetype.AddAddEdge(edgeIndex, archetype);
         }

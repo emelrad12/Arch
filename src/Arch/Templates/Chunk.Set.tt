@@ -19,7 +19,7 @@ public partial struct Chunk
 
         for (var i = 0; i < index; i++)
         {
-            sets.AppendLine($"Unsafe.Add(ref t{i}FirstElement, index) = t{i}Component;");
+            sets.AppendLine($"Unsafe.Add(ref t{i}FirstElement, index) = t{i}Component!;");
         }
     #>
 
