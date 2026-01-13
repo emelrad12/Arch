@@ -1,6 +1,6 @@
 namespace Arch.Core;
 
-internal record struct InternalFastEntityAccessor(Array data)
+public record struct InternalFastEntityAccessor(Array data)
 {
     public readonly ref T Get<T>(int index)
     {
@@ -15,21 +15,27 @@ internal record struct InternalFastEntityAccessor(Array data)
     }
 }
 
-public struct FastEntityAccessorT<T>
+public readonly struct FastEntityAccessorT<T, TMain> where TMain : IMainSingleArchetypeComponent
 {
-    internal FastEntityAccessorT(InternalFastEntityAccessor data)
+    public static FastEntityAccessorT<T> Value;
+}
+
+public readonly struct FastEntityAccessorT<T>
+{
+    public FastEntityAccessorT(InternalFastEntityAccessor data)
     {
         _typedData = data.data as T[];
     }
 
-    private T[] _typedData;
+    public static FastEntityAccessorT<T> Value;
+    public readonly T[] _typedData;
 
     public readonly ref T Get(int index)
     {
         return ref _typedData[index];
     }
 
-    public readonly ref T Get(Entity entity)
+    public readonly unsafe ref T Get(Entity entity)
     {
         return ref _typedData[entity.SlotIndex];
     }
@@ -42,11 +48,18 @@ public struct FastEntityAccessorT<T>
 
 public static class FastEntityAccessorCache
 {
-    internal static InternalFastEntityAccessor[] _cache;
-    private static int highestArchetypeId = 0;
+    public static InternalFastEntityAccessor[] _cache = [];
+    private static int _highestArchetypeId = 0;
+    private static World _activeWorld = null!;
+
+    public static void SetActiveWorld(World world)
+    {
+        _activeWorld = world;
+    }
 
     public static void RefreshForWorld(World world)
     {
+        Array.Clear(_cache);
         foreach (var archetype in world.Archetypes.Items)
         {
             RefreshForChunk(archetype);
@@ -56,8 +69,8 @@ public static class FastEntityAccessorCache
     public static void RefreshForChunk(Archetype archetype)
     {
         var totalComponents = ComponentRegistry.Size + 1;
-        highestArchetypeId = Math.Max(highestArchetypeId, archetype.id + 1);
-        var totalSize = highestArchetypeId * totalComponents;
+        _highestArchetypeId = Math.Max(_highestArchetypeId, archetype.id + 1);
+        var totalSize = _highestArchetypeId * totalComponents;
         if (_cache == null! || _cache.Length < totalSize)
         {
             var newCache = new InternalFastEntityAccessor[totalSize];
@@ -65,16 +78,49 @@ public static class FastEntityAccessorCache
             {
                 Array.Copy(_cache, newCache, _cache.Length);
             }
+
             _cache = newCache;
         }
 
-        foreach (var type in archetype.Signature.Components)
+        foreach (var item in archetype.Signature.Components)
         {
-            var dataForId = archetype.chunk.GetArray(type);
+            var dataForId = archetype.chunk.GetArray(item);
             var accessor = new InternalFastEntityAccessor(dataForId);
-            SetCacheItem(archetype.id, type.Id, accessor);
+            if (typeof(ISingleArchetypeComponent).IsAssignableFrom(item.Type))
+            {
+                // set FastEntityAccessorT<T>.Value
+                var fastEntityAccessorType = typeof(FastEntityAccessorT<>).MakeGenericType(item.Type);
+                var field = fastEntityAccessorType.GetField("Value", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+                var fastEntityAccessorInstance = Activator.CreateInstance(fastEntityAccessorType, accessor);
+                field!.SetValue(null, fastEntityAccessorInstance);
+            }
+
+            if (typeof(IMainSingleArchetypeComponent).IsAssignableFrom(item.Type))
+            {
+                foreach (var innerItem in archetype.Signature.Components)
+                {
+                    if (!typeof(ISingleArchetypeComponent).IsAssignableFrom(innerItem.Type))
+                    {
+                        // Field lives on FastEntityAccessorT<TInner, TMain> and its type is FastEntityAccessorT<TInner>
+                        var holderType = typeof(FastEntityAccessorT<,>).MakeGenericType(innerItem.Type, item.Type);
+                        var field = holderType.GetField("Value", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+
+                        // Create FastEntityAccessorT<TInner>(InternalFastEntityAccessor)
+                        var accessorType = typeof(FastEntityAccessorT<>).MakeGenericType(innerItem.Type);
+                        var dataForInnerId = archetype.chunk.GetArray(innerItem);
+                        var innerAccessor = new InternalFastEntityAccessor(dataForInnerId);
+                        var accessorInstance = Activator.CreateInstance(accessorType, innerAccessor);
+
+                        field!.SetValue(null, accessorInstance);
+                    }
+                }
+            }
+
+            SetCacheItem(archetype.id, item.Id, accessor);
         }
     }
+
+    private static int GetIndex(int archetypeId, int componentId) => archetypeId * ComponentRegistry.Size + componentId;
 
     private static void SetCacheItem(int archetypeId, int componentId, InternalFastEntityAccessor accessor)
     {
@@ -83,13 +129,11 @@ public static class FastEntityAccessorCache
             throw new InvalidOperationException("Cannot cache a null data array.");
         }
 
-        var index = archetypeId * ComponentRegistry.Size + componentId;
-        _cache[index] = accessor;
+        _cache[GetIndex(archetypeId, componentId)] = accessor;
     }
 
     internal static InternalFastEntityAccessor GetCacheItem(int archetypeId, int componentId)
     {
-        var index = archetypeId * ComponentRegistry.Size + componentId;
-        return _cache[index];
+        return _cache[GetIndex(archetypeId, componentId)];
     }
 }

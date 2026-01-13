@@ -20,6 +20,16 @@ public class NetStandardList<T>
         _count = 0;
     }
 
+    public List<T> ToList()
+    {
+        List<T> list = new List<T>(_count);
+        for (int i = 0; i < _count; i++)
+        {
+            list.Add(_items[i]);
+        }
+        return list;
+    }
+
     /// <summary>
     ///     The amount of items in this instance.
     /// </summary>

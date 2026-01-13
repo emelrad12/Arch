@@ -234,8 +234,8 @@ public class Archetypes : IDisposable
     }
 }
 
-public interface SingleArchetypeComponent;
-
+public interface ISingleArchetypeComponent;
+public interface IMainSingleArchetypeComponent : ISingleArchetypeComponent;
 /// <summary>
 ///     The <see cref="Archetype"/> class contains all <see cref="Arch.Core.Entity"/>'s of a unique combination of component types.
 ///     These are stored in multiple <see cref="Chunk"/>'s located within the <see cref="Chunks"/>-Array.
@@ -254,6 +254,7 @@ public sealed partial class Archetype
     {
         return archetypes[id];
     }
+
     /// <summary>
     ///     Initializes a new instance of the <see cref="Archetype"/> class by a group of components.
     /// </summary>
@@ -386,11 +387,11 @@ public sealed partial class Archetype
         if (currentChunk.IsFull)
         {
             currentChunk.ExpandCapacity(currentChunk.Capacity * 2);
+            FastEntityAccessorCache.RefreshForChunk(this);
         }
 
         slot = new(currentChunk.Add(entity), 0);
         chunk = currentChunk;
-        FastEntityAccessorCache.RefreshForChunk(this);
         return 0;
     }
 
@@ -412,7 +413,6 @@ public sealed partial class Archetype
 
         // Set counts
         EntityCount += amount;
-        FastEntityAccessorCache.RefreshForChunk(this);
     }
 
     /// <summary>
@@ -661,6 +661,7 @@ public sealed partial class Archetype
     internal void EnsureEntityCapacity(int newCapacity)
     {
         GetChunk(0).ExpandCapacity(newCapacity);
+        FastEntityAccessorCache.RefreshForChunk(this);
     }
 
     /// <summary>
@@ -728,6 +729,7 @@ public sealed partial class Archetype
         ref var chunk = ref archetype.GetChunk(0);
         var chunkSize = chunk.Count;
         chunk.ExpandCapacity(chunkSize + amount);
+        FastEntityAccessorCache.RefreshForChunk(archetype);
 
         // Put n empty slots into the slots span
         for (var index = chunkSize; index < chunkSize + amount; index++)
@@ -735,7 +737,6 @@ public sealed partial class Archetype
             slots[next++] = new Slot(index, 0);
         }
 
-        FastEntityAccessorCache.RefreshForChunk(archetype);
         return next;
     }
 

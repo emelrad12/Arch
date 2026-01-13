@@ -123,6 +123,11 @@ public static partial class EntityExtensions
     /// <returns>A reference to the component.</returns>
 
     [Pure]
+    public static ref T GetWithMain<T, TMain>(this in Entity entity) where TMain : IMainSingleArchetypeComponent
+    {
+        return ref FastEntityAccessorT<T, TMain>.Value.Get(entity);
+
+    }
     public static ref T Get<T>(this in Entity entity)
     {
         #if DEBUG
@@ -135,7 +140,7 @@ public static partial class EntityExtensions
             throw new InvalidOperationException($"Entity {entity} does not have a component of type {typeof(T).Name}.");
         }
         #endif
-        // return ref entity.FastGet<T>();
+        return ref entity.GetImpl<T>();
         var world = World.Worlds.DangerousGetReferenceAt(entity.WorldId);
         return ref world.Get<T>(entity);
     }
@@ -143,19 +148,27 @@ public static partial class EntityExtensions
     [Pure]
     public static ref T Get<T>(this in FastEntity entity)
     {
-        return ref entity.FastGet<T>();
+        return ref entity.GetImpl<T>();
     }
 
-    public static ref T FastGet<T>(this in Entity entity)
+    private static ref T GetImpl<T>(this in Entity entity)
     {
+        if (typeof(ISingleArchetypeComponent).IsAssignableFrom(typeof(T)))
+        {
+            return ref FastEntityAccessorT<T>.Value.Get(entity);
+        }
         var index = entity.SlotIndex;
         var archetypeId = entity.ArchetypeId;
         var componentId = Component<T>.ComponentType.Id;
         return ref FastEntityAccessorCache.GetCacheItem(archetypeId, componentId).Get<T>(index);
     }
 
-    public static ref T FastGet<T>(this in FastEntity entity)
+    private static ref T GetImpl<T>(this in FastEntity entity)
     {
+        if (typeof(ISingleArchetypeComponent).IsAssignableFrom(typeof(T)))
+        {
+            return ref FastEntityAccessorT<T>.Value.Get(entity);
+        }
         var index = entity.SlotIndex;
         var archetypeId = entity.ArchetypeId;
         var componentId = Component<T>.ComponentType.Id;
@@ -235,11 +248,6 @@ public static partial class EntityExtensions
 
     public static void Add<T>(this in Entity entity, in T? component = default)
     {
-        if(entity.Has<T>())
-        {
-            throw new InvalidOperationException($"Entity {entity} already has a component of type {typeof(T).Name}.");
-        }
-
         var world = World.Worlds.DangerousGetReferenceAt(entity.WorldId);
         world.Add(entity, component);
     }

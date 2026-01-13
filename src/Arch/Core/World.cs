@@ -124,6 +124,7 @@ public partial class World
 
             Worlds[recycledId] = world;
             Interlocked.Increment(ref worldSizeUnsafe);
+            FastEntityAccessorCache.SetActiveWorld(world);
             return world;
         }
 #endif
@@ -314,6 +315,11 @@ public partial class World : IDisposable
     /// <param name="destinationSlot">The new <see cref="Slot"/> in which the moved <see cref="Entity"/> will land.</param>
     internal void Move(Entity entity, ref EntityData data, Archetype source, Archetype destination, out Slot destinationSlot)
     {
+        if (source == destination)
+        {
+            destinationSlot = data.Slot;
+            return;
+        }
         // Entity should match the supplied EntityData.
         Debug.Assert(entity == data.Archetype.Entity(data.Slot));
 
@@ -569,7 +575,7 @@ public partial class World
 
     private Dictionary<Type, Archetype> SingleTypeArchetypes { get; } = new();
 
-    public Archetype? GetSingleArchetypeComponentArchetype<T>() where T : SingleArchetypeComponent
+    public Archetype? GetSingleArchetypeComponentArchetype<T>() where T : ISingleArchetypeComponent
     {
         if (SingleTypeArchetypes.TryGetValue(typeof(T), out var archetype))
         {
@@ -579,9 +585,31 @@ public partial class World
         return null;
     }
 
-    public FastEntityAccessorT<T> GetSingleArchetypeComponentAccessor<T>() where T : SingleArchetypeComponent
+    public void GetSingleArchetypeComponentAccessor<T>(out FastEntityAccessorT<T> accessor) where T : ISingleArchetypeComponent
     {
-        var archetype = GetSingleArchetypeComponentArchetype<T>();
+        accessor = GetSingleArchetypeComponentAccessor<T>();
+    }
+
+    public void GetNonUniqueArchetypeComponentAccessor<TAccessor, TParentType>(out FastEntityAccessorT<TAccessor> accessor) where TParentType : ISingleArchetypeComponent
+    {
+        accessor = GetNonUniqueArchetypeAccessor<TAccessor, TParentType>();
+    }
+
+    public FastEntityAccessorT<TAccessor> GetNonUniqueArchetypeAccessor<TAccessor, TParentType>() where TParentType : ISingleArchetypeComponent
+    {
+        return GetSingleArchetypeAccessorInternal<TAccessor, TParentType>();
+    }
+
+    public FastEntityAccessorT<T> GetSingleArchetypeComponentAccessor<T>() where T : ISingleArchetypeComponent
+    {
+        return GetSingleArchetypeAccessorInternal<T, T>();
+    }
+
+    private FastEntityAccessorT<TAccessor> GetSingleArchetypeAccessorInternal<TAccessor, TArchetypeComponent>() where TArchetypeComponent : ISingleArchetypeComponent
+    {
+        var archetype = GetSingleArchetypeComponentArchetype<TArchetypeComponent>();
+        // Hacky move this before the null return to force the component to be registered. So all components are registered and there are no world refreshes mid archetype creation.
+        var componentId = Component<TAccessor>.ComponentType.Id;
         if (archetype == null)
         {
             // Return empty accessor.
@@ -589,16 +617,55 @@ public partial class World
             // But in case it is then it would simply throw a null reference exception.
             return new(new(null!));
         }
+
         var archetypeId = archetype.id;
-        var componentId = Component<T>.ComponentType.Id;
         return new(FastEntityAccessorCache.GetCacheItem(archetypeId, componentId));
     }
 
-    private void CheckIfAnyComponentIsSingleArchetypeComponent(Signature signature, Archetype archetype)
+    private void DestroyArchetypesThatContainSingleArchetypeComponents(Archetype main)
+    {
+        foreach (var archetype in Archetypes.Items.ToList())
+        {
+            foreach (var component in main.Signature)
+            {
+                // This means two archetypes have the same single archetype component, which is not allowed
+                if (typeof(ISingleArchetypeComponent).IsAssignableFrom(component.Type) && archetype.Has(component))
+                {
+                    if (archetype != main)
+                    {
+                        Archetypes.Remove(archetype);
+                    }
+                }
+            }
+        }
+    }
+
+    private Archetype? CheckIfAnyTypeIsSingleArchetypeAndReturnItsArchetype(in Signature signature)
     {
         foreach (var componentType in signature.Components)
         {
-            if (typeof(SingleArchetypeComponent).IsAssignableFrom(componentType))
+            if (typeof(ISingleArchetypeComponent).IsAssignableFrom(componentType))
+            {
+                // If the type is already registered, return its archetype
+                if (SingleTypeArchetypes.TryGetValue(componentType, out var registeredArchetype))
+                {
+                    if (registeredArchetype.Signature.Components.Length < signature.Count)
+                    {
+                        return null;
+                    }
+
+                    return registeredArchetype;
+                }
+            }
+        }
+        return null;
+    }
+
+    private void AssertComponentIsSingleArchetypeComponent(Signature signature, Archetype archetype)
+    {
+        foreach (var componentType in signature.Components)
+        {
+            if (typeof(ISingleArchetypeComponent).IsAssignableFrom(componentType))
             {
                 // If the type is already registered, throw because it means two archetypes have the same single archetype component
                 SingleTypeArchetypes.Add(componentType, archetype);
@@ -656,6 +723,12 @@ public partial class World
     /// <returns>An existing or new <see cref="Archetype"/>.</returns>
     internal Archetype GetOrCreate(in Signature signature)
     {
+        // Check if any of the types is a single archetype component and if so, return its archetype if it exists
+        var singleArchetype = CheckIfAnyTypeIsSingleArchetypeAndReturnItsArchetype(in signature);
+        if (singleArchetype != null)
+        {
+            return singleArchetype;
+        }
         var hashCode = signature.GetHashCode();
         if (TryGetArchetype(hashCode, out var archetype))
         {
@@ -671,7 +744,8 @@ public partial class World
         // Archetypes always allocate one single chunk upon construction
         Capacity += archetype.EntitiesPerChunk;
         EntityInfo.EnsureCapacity(Capacity);
-        CheckIfAnyComponentIsSingleArchetypeComponent(signature, archetype);
+        AssertComponentIsSingleArchetypeComponent(signature, archetype);
+        DestroyArchetypesThatContainSingleArchetypeComponents(archetype);
         return archetype;
     }
 
@@ -1260,7 +1334,6 @@ public partial class World
         var oldArchetype = data.Archetype;
         var type = Component<T>.ComponentType;
         newArchetype = GetOrCreateArchetypeByAddEdge(in type, oldArchetype);
-
         Move(entity, ref data, oldArchetype, newArchetype, out slot);
     }
 
