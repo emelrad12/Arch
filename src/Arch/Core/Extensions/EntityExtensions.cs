@@ -115,19 +115,18 @@ public static partial class EntityExtensions
         return world.Has<T>(entity);
     }
 
+    [Pure]
+    public static ref T GetWithMain<T, TMain>(this in Entity entity) where TMain : IMainSingleArchetypeComponent
+    {
+        return ref FastEntityAccessorT<T, TMain>.Value.Get(entity);
+    }
+
     /// <summary>
     ///     Returns a reference to the component of an <see cref="Entity"/>.
     /// </summary>
     /// <typeparam name="T">The component type.</typeparam>
     /// <param name="entity">The <see cref="Entity"/>.</param>
     /// <returns>A reference to the component.</returns>
-
-    [Pure]
-    public static ref T GetWithMain<T, TMain>(this in Entity entity) where TMain : IMainSingleArchetypeComponent
-    {
-        return ref FastEntityAccessorT<T, TMain>.Value.Get(entity);
-
-    }
     public static ref T Get<T>(this in Entity entity)
     {
         #if DEBUG
@@ -175,23 +174,11 @@ public static partial class EntityExtensions
         return ref FastEntityAccessorCache.GetCacheItem(archetypeId, componentId).Get<T>(index);
     }
 
-    public record struct CachedFastGet(int ArchetypeId, int ComponentId);
     public static FastEntityAccessorT<T> GetFastEntityAccessor<T>(this in Entity entity)
     {
         var archetypeId = entity.ArchetypeId;
         var componentId = Component<T>.ComponentType.Id;
         return new(FastEntityAccessorCache.GetCacheItem(archetypeId, componentId));
-    }
-    public static CachedFastGet GetCached<T>(this in Entity entity)
-    {
-        var archetypeId = entity.ArchetypeId;
-        var componentId = Component<T>.ComponentType.Id;
-        return new(archetypeId, componentId);
-    }
-
-    public static ref T FasterGet<T>(this in Entity entity, CachedFastGet cachedFastGet)
-    {
-        return ref FastEntityAccessorCache.GetCacheItem(cachedFastGet.ArchetypeId, cachedFastGet.ComponentId).Get<T>(entity.SlotIndex);
     }
 
     /// <summary>
