@@ -381,6 +381,11 @@ public readonly struct Entity : IEquatable<Entity>, IComparable<Entity>
     /// <returns>Its string.</returns>
     public override string ToString()
     {
+        if(this == Null)
+        {
+            return "Entity = Null";
+        }
+
         return $"Entity = {{ {nameof(Id)} = {Id}, {nameof(WorldId)} = {WorldId}, {nameof(Version)} = {Version} }}";
     }
 }
