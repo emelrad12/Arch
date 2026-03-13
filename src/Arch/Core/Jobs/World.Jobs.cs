@@ -149,8 +149,6 @@ public partial class World
         var currentParentHandle = SharedJobScheduler.Schedule(parent);
         foreach (var archetype in query.GetArchetypeIterator())
         {
-            // If more chunks than threads then run each chunk as a separate job. Don't granularize any further, as it will cause too much overhead.
-            var isManyChunks = archetype.Chunks.Count > Environment.ProcessorCount;
             for (int i = 0; i < archetype.Chunks.Count; i++)
             {
                 ref var chunk = ref archetype.Chunks[i];
@@ -162,7 +160,7 @@ public partial class World
 
                 var jobCopy = innerJob;
                 jobCopy.SetChunk(chunk);
-                var job = new ParallelJobProducer<T>(0, chunk.Count, jobCopy, 1, true, source, isManyChunks);
+                var job = new ParallelJobProducer<T>(0, chunk.Count, jobCopy, 1, true, source);
                 job.GetHandle().SetParent(currentParentHandle);
                 SharedJobScheduler.Flush(job.GetHandle());
             }
