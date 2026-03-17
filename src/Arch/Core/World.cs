@@ -89,7 +89,7 @@ public partial class World
     /// <summary>
     ///     The shared static <see cref="JobScheduler"/> used for Multithreading.
     /// </summary>
-    public static JobScheduler? SharedJobScheduler { get; set; }
+    public static JobScheduler SharedJobScheduler { get; set; }
 
     private bool _isDisposed;
 
