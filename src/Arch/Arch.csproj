@@ -593,7 +593,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\..\..\ZeroAllocJobScheduler\JobScheduler\Schedulers.csproj" />
+    <ProjectReference Include="..\..\..\ZeroAllocJobScheduler\JobScheduler\Schedulers.csproj" />
   </ItemGroup>
-
 </Project>
